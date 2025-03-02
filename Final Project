@@ -1,0 +1,231 @@
+A project using different types of models to predict failure of products based on specific measurements
+
+---
+title: "Phase 2"
+author: "Conner Roys"
+date: "2025-03-02"
+output:
+  word_document: default
+  html_document: default
+---
+# load libraries
+library(tidyverse)
+library(tidymodels)
+library(mice)
+library(VIM)
+library(ggplot2)
+library(rpart)
+library(randomForest)
+library(xgboost)
+library(ggcorrplot)
+library(rpart.plot)
+library(ranger)
+library(caret)
+library(tune)
+library(usemodels)
+library(dplyr)
+library(glmnet)
+
+# Load data
+train_data = read_csv("train.csv")
+
+str(train_data)
+summary(train_data)
+
+# mutating to factor for later use
+train_data = train_data %>% mutate_if(is.character, as_factor)
+
+# To visualize missing data
+aggr(train_data, numbers = TRUE, sortVars = TRUE,cex.axis = 0.7, col = c("blue", "red"))
+
+# fixing missing data, row wise deletion on Loading, imputation on other missing data
+train_data = train_data %>% drop_na(loading)
+imputed_data = mice(train_data, method = "pmm", m = 5)
+train_data = complete(imputed_data)
+# again to check changes
+aggr(train_data, numbers = TRUE, sortVars = TRUE,cex.axis = 0.7, col = c("blue", "red"))
+# Select only numeric variables
+numeric_vars = train_data %>% select_if(is.numeric) %>% colnames()
+
+# phase 2
+set.seed(123)
+data_split = initial_split(train_data, prop = 0.8, strata = failure)
+train_set = training(data_split)
+test_set = testing(data_split)
+
+# Class tree model
+failure_recipe = recipe(failure ~ ., data = train_set)
+
+# Define the classification tree model
+tree_model = decision_tree() %>%
+  set_engine("rpart", model = TRUE) %>%
+  set_mode("classification")
+
+# Create a workflow
+failure_wflow = workflow() %>%
+  add_model(tree_model) %>%
+  add_recipe(failure_recipe)
+
+# Train the classification tree model
+failure_fit = fit(failure_wflow, data = train_set)
+
+# View the tree structure
+tree = failure_fit %>%
+  extract_fit_parsnip() %>%
+  pluck("fit")
+
+# This tree only shows one node, going to try and check the complexity parameter
+rpart.plot(tree)
+
+# Train the classification tree model on the test set
+failure_fit_test = fit(failure_wflow, data = test_set)
+tree_test = failure_fit_test %>%
+  extract_fit_parsnip() %>%
+  pluck("fit")
+rpart.plot(tree_test)
+
+# Class tree #2
+tree_model2 = decision_tree(cost_complexity = 0.001) %>%
+  set_engine("rpart", model = TRUE) %>%
+  set_mode("classification")
+
+# Create a workflow
+failure_wflow2 = workflow() %>%
+  add_model(tree_model2) %>%
+  add_recipe(failure_recipe)
+
+# Train the classification tree model
+failure_fit2 = fit(failure_wflow2, data = train_set)
+
+# View the tree structure
+tree2 = failure_fit2 %>%
+  extract_fit_parsnip() %>%
+  pluck("fit")
+
+#This tree looks much stronger
+rpart.plot(tree2)
+
+# Train the second classification tree model on the test set
+failure_fit2_test = fit(failure_wflow2, data = test_set)
+tree2_test = failure_fit2_test %>%
+  extract_fit_parsnip() %>%
+  pluck("fit")
+rpart.plot(tree2_test)
+
+# Random Forest
+RFfailure_recipe = recipe(failure ~ ., data = train_set) %>%
+  step_dummy(all_nominal(), -all_outcomes())
+
+rf_model = rand_forest() %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
+
+rf_wflow = workflow() %>%
+  add_model(rf_model) %>%
+  add_recipe(RFfailure_recipe)
+rf_fit = fit(rf_wflow, data = train_set)
+
+rf_preds = predict(rf_fit, new_data = test_set)
+
+# Much stronger accuracy, this is the model I chose for my final submission
+confusionMatrix(rf_preds$.pred_class, test_set$failure, positive = "Yes")
+
+# Train the Random Forest model on the test set
+rf_fit_test = fit(rf_wflow, data = test_set)
+rf_preds_test = predict(rf_fit_test, new_data = test_set)
+confusionMatrix(rf_preds_test$.pred_class, test_set$failure, positive = "Yes")
+
+# Logistic Regression
+
+log_reg_spec = logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+
+# Create a recipe
+failure_recipe = recipe(failure ~ ., data = train_set)
+
+# Create a workflow
+log_reg_wf = workflow() %>% 
+  add_model(log_reg_spec) %>% 
+  add_recipe(failure_recipe)
+
+# Fit the model on the training set
+log_reg_fit = fit(log_reg_wf, data = train_set)
+
+# Print model summary
+log_reg_fit
+
+# Make predictions on the test set
+log_reg_preds = predict(log_reg_fit, new_data = test_set, type = "class")
+
+# Evaluate accuracy
+log_reg_metrics = test_set %>%
+  bind_cols(log_reg_preds) %>%
+  metrics(truth = failure, estimate = .pred_class)
+
+# Print accuracy
+log_reg_metrics
+
+# Train the Logistic Regression model on the test set
+log_reg_fit_test = fit(log_reg_wf, data = test_set)
+log_reg_preds_test = predict(log_reg_fit_test, new_data = test_set, type = "class")
+log_reg_metrics_test = test_set %>%
+  bind_cols(log_reg_preds_test) %>%
+  metrics(truth = failure, estimate = .pred_class)
+log_reg_metrics_test
+
+# Getting final submission file
+test_predictions = as_tibble(rf_preds_test)
+test_predictions = test_set %>% 
+  select(id) %>%
+  bind_cols(rf_preds_test) 
+
+colnames(test_predictions) <- c("id", "failure")
+
+
+write_csv(test_predictions, "test_predictions.csv")
+
+# XGBoost model
+
+#     ***** COULD NOT GET THIS TO WORK, RUNS FOR A LONG TIME AND WOULD NOT FIT, leaving code in to review
+
+use_xgboost(failure~.,train_set)
+
+xgboost_recipe = 
+  recipe(failure ~ ., data = train_set) %>% 
+  update_role(failure, new_role = "outcome") %>%  
+  update_role(all_predictors(), new_role = "predictor") %>% 
+  step_zv(all_predictors()) %>%                 
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%  # Convert categorical to dummies
+  step_nzv(all_predictors()) %>%                
+  step_normalize(all_numeric_predictors())  
+
+xgboost_spec = 
+  boost_tree(trees = tune(), min_n = tune(), tree_depth = tune(), learn_rate = tune(), 
+             loss_reduction = tune(), sample_size = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("xgboost") 
+
+xgboost_workflow = 
+  workflow() %>% 
+  add_recipe(xgboost_recipe) %>% 
+  add_model(xgboost_spec) 
+
+set.seed(85512)
+xgboost_tune =
+  tune_grid(xgboost_workflow, resamples = vfold_cv(train_set, strata = failure), grid = 25)
+collect_metrics(xgboost_tune)
+
+best_xgboost = select_best(xgboost_tune, metric = "accuracy")
+
+#select best model
+final_xgb = finalize_workflow(
+  xgboost_workflow,
+  best_xgboost
+)
+#view model
+final_xgbfit = fit(final_xgb, data = train_set)
+
+test_pred_xgb = predict(final_xgbfit, train_set)
+
+confusionMatrix(test_pred_xgb$.pred_class, test_set$failure, positive = "1")
